@@ -1,23 +1,24 @@
 
+
 // Import required libraries
 #include "WiFi.h"
-#include "ESPAsyncWebServer.h"
-#include "SPIFFS.h"
-#include "DHT20.h"
 #include "ThingsBoard.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 // Import supported libraries
 #include <Arduino_MQTT_Client.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <DHT_U.h>
 
+
+
+#define DEBUG 1
 
 // Replace with your network credentials
-// const char* ssid = PROJECT_WIFI_SSID;
-// const char* password = PROJECT_WIFI_PASSWORD;
-
-const char* ssid = "ACLAB-IOT";
-const char* password = "12345678";
+const char* ssid = "271104E";
+const char* password = "1234567890";
 
 
 /* Server object ---------------------------------------------*/
@@ -32,24 +33,21 @@ Arduino_MQTT_Client mqttClient(espClient);
 ThingsBoard tb(mqttClient, MAX_MESSAGE_RECEIVE_SIZE, MAX_MESSAGE_SEND_SIZE, Default_Max_Stack_Size);
 
 // Set up the device properties on server
-constexpr char DEVICE_TOKEN[] = "";
-constexpr char TEMPERATURE_KEY[] = "";
-constexpr char HUMIDITY_KEY[] = "";
+constexpr char DEVICE_TOKEN[] = "Lab1_IOT";
+constexpr char TEMPERATURE_KEY[] = "temperature";
+constexpr char HUMIDITY_KEY[] = "humidity";
 
 
 /* Sensor object ---------------------------------------------*/
-DHT20 DHT;
+#define DHTPIN 6
+#define DHTTYPE    DHT11 
+DHT_Unified dht(DHTPIN, DHTTYPE);
 typedef struct {
   float Temperature = 0.0;
   float Humidity = 0.0;
 } DHT20_Data_t;
 
 DHT20_Data_t DHT20_Data;
-
-// Set LED GPIO
-const int ledPin = 13;
-// Stores LED state
-String ledState;
 
 // Task object
 TaskHandle_t WifiTask_handle;
@@ -63,26 +61,35 @@ void wifiTask(void *pvParameters)
   Serial.begin(115200);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);    
+#ifdef DEBUG
     Serial.println("Connecting to WiFi..");
+#endif
   }
 
   // Print ESP32 Local IP Address
   Serial.println(WiFi.localIP());
+  vTaskResume(PublishData_handle);
   vTaskDelete(NULL);  // Delete the task when done
 }
 
 // Task to read value from DHT20
 void sensorTask(void* pvParameters) 
-{
-  Wire.begin();   // set up I2C bus
-  DHT.begin();    // Start sensor
+{  
+  dht.begin();    // Start sensor
+  sensors_event_t event;
 
   while(1){
-    // get temperature value
-    DHT20_Data.Temperature = DHT.getTemperature(); 
+    dht.temperature().getEvent(&event);
+    // get temperature value    
+    DHT20_Data.Temperature = event.temperature;
+    vTaskDelay(5);
+    dht.humidity().getEvent(&event);    
     // get humidity value
-    DHT20_Data.Humidity = DHT.getHumidity(); 
+    DHT20_Data.Humidity = event.relative_humidity;
+#ifdef DEBUG
+    Serial.printf("Temperature: %.3f | Humidity: %.3f \n", DHT20_Data.Temperature, DHT20_Data.Humidity);
+#endif
 
     // get sensor data periodly
     vTaskDelay(1000 / portTICK_PERIOD_MS); 
@@ -97,14 +104,21 @@ void publishdataTask(void* pvParameters)
   while(1){
     if (!tb.connected())
     {
+#ifdef  DEBUG    
         Serial.printf("Connecting to: (%s) with token (%s)\n", THINGSBOARD_SERVER, DEVICE_TOKEN);
+#endif
         if (!tb.connect(THINGSBOARD_SERVER, DEVICE_TOKEN, THINGSBOARD_PORT))
-        {
-            Serial.println("Failed to connect");
+        {          
+#ifdef  DEBUG        
+          Serial.println("Failed to connect");
+#endif          
         }
         else
         {
-            Serial.println("Connected");
+          vTaskResume(SensorTask_handle);
+#ifdef  DEBUG                  
+          Serial.println("Connected");
+#endif          
         }
     }
 
@@ -119,12 +133,14 @@ void publishdataTask(void* pvParameters)
 
 }
 
-void setup(){
-  pinMode(ledPin, OUTPUT);
+void setup(){  
 
   // Create tasks for Wi-Fi and server
   xTaskCreate(sensorTask, "SensorTask", 1024 * 4, NULL, 3, &SensorTask_handle);  
+  vTaskSuspend(SensorTask_handle);
   xTaskCreate(publishdataTask, "PublishDataTask", 1024 * 4, NULL, 2, &PublishData_handle);
+  vTaskSuspend(PublishData_handle);
+
   xTaskCreate(wifiTask, "WiFiTask", 1024 * 4, NULL, 1, &WifiTask_handle);    
 }
  
