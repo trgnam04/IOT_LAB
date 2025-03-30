@@ -65,6 +65,7 @@ DHT20_Data_t DHT20_Data;
 TaskHandle_t WifiTask_handle;
 TaskHandle_t SensorTask_handle;
 TaskHandle_t PublishData_handle;
+TaskHandle_t ServerTask_handle;
 
 
 /* Synchronous object ---------------------------------------------*/
@@ -86,7 +87,7 @@ void wifiTask(void *pvParameters)
 
   // Print ESP32 Local IP Address
   Serial.println(WiFi.localIP());
-  vTaskResume(PublishData_handle);
+  vTaskResume(ServerTask_handle);  
   vTaskDelete(NULL);  // Delete the task when done
 }
 
@@ -108,6 +109,7 @@ void sensorTask(void* pvParameters)
     Serial.printf("Temperature: %.3f | Humidity: %.3f \n", DHT20_Data.Temperature, DHT20_Data.Humidity);
 #endif
 
+    
     // get sensor data periodly
     vTaskDelay(1000 / portTICK_PERIOD_MS); 
   }
@@ -117,6 +119,22 @@ void sensorTask(void* pvParameters)
 // Task to publish data to coreiot server
 void publishdataTask(void* pvParameters)
 {
+
+  while(1){
+   
+
+    tb.sendTelemetryData(TEMPERATURE_KEY, DHT20_Data.Temperature);
+    tb.sendTelemetryData(HUMIDITY_KEY, DHT20_Data.Humidity);
+
+    
+
+    // publish data periodly
+    vTaskDelay(5000 / portTICK_PERIOD_MS); 
+  }
+
+}
+
+void ServerTask(void* pvParameters){
 
   while(1){
     if (!tb.connected())
@@ -137,15 +155,29 @@ void publishdataTask(void* pvParameters)
           Serial.println("Connected");
 #endif          
         }
+        vTaskResume(PublishData_handle);
     }
 
-    tb.sendTelemetryData(TEMPERATURE_KEY, DHT20_Data.Temperature);
-    tb.sendTelemetryData(HUMIDITY_KEY, DHT20_Data.Humidity);
+    if (!subscribed) {
+      Serial.println("Subscribing for shared attribute updates...");
+      // Shared attributes we want to request from the server
+      constexpr std::array<const char*, MAX_ATTRIBUTES> SUBSCRIBED_SHARED_ATTRIBUTES = {SHARED_ATTRIBUTE_KEY};
+      const Shared_Attribute_Callback<MAX_ATTRIBUTES> callback(&processSharedAttributeUpdate, SUBSCRIBED_SHARED_ATTRIBUTES);
+      if (!shared_update.Shared_Attributes_Subscribe(callback)) {
+        Serial.println("Failed to subscribe for shared attribute updates");
+        return;
+      }
+  
+      Serial.println("Subscribe done");
+      subscribed = true;
+    }
+  
+    Attribute attribute[MAX_ATTRIBUTES] = {{SHARED_ATTRIBUTE_KEY, true}}; 
+
+
 
     tb.loop();
-
-    // publish data periodly
-    vTaskDelay(5000 / portTICK_PERIOD_MS); 
+    vTaskDelay(1000);
   }
 
 }
@@ -180,12 +212,14 @@ void setup(){
   eventGroup = xEventGroupCreate();
 
   // Create tasks for Wi-Fi and server
-  xTaskCreate(sensorTask, "SensorTask", 1024 * 4, NULL, 3, &SensorTask_handle);  
-  vTaskSuspend(SensorTask_handle);
+  xTaskCreate(sensorTask, "SensorTask", 1024 * 4, NULL, 3, &SensorTask_handle);    
   xTaskCreate(publishdataTask, "PublishDataTask", 1024 * 4, NULL, 2, &PublishData_handle);
   vTaskSuspend(PublishData_handle);
 
   xTaskCreate(wifiTask, "WiFiTask", 1024 * 4, NULL, 1, &WifiTask_handle);    
+  xTaskCreate(ServerTask, "ServerTask", 1024 * 2, NULL, 1, &ServerTask_handle);    
+  vTaskSuspend(ServerTask_handle);
+  
 }
  
 void loop(){
