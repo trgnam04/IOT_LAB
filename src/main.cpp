@@ -61,10 +61,15 @@ typedef struct {
 
 DHT20_Data_t DHT20_Data;
 
-// Task object
+/* Task object ---------------------------------------------*/
 TaskHandle_t WifiTask_handle;
 TaskHandle_t SensorTask_handle;
 TaskHandle_t PublishData_handle;
+
+
+/* Synchronous object ---------------------------------------------*/
+EventGroupHandle_t eventGroup;
+const int ABORT_MEASURE_BIT = (1 << 0);
 
 
 // Task to handle Wi-Fi connection
@@ -145,7 +150,34 @@ void publishdataTask(void* pvParameters)
 
 }
 
+/// @brief Update callback that will be called as soon as one of the provided shared attributes changes value,
+/// if none are provided we subscribe to any shared attribute change instead
+/// @param data Data containing the shared attributes that were changed and their current value
+void processSharedAttributeUpdate(const JsonObjectConst &data) {
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    if(it->key().c_str() == "measurement_status"){
+      if(it->value().as<boolean>()){
+        xEventGroupSetBits(eventGroup, ABORT_MEASURE_BIT); 
+      }
+      else{
+        xEventGroupClearBits(eventGroup, ABORT_MEASURE_BIT); 
+      }      
+    }    
+    // Shared attributes have to be parsed by their type.    
+  }
+
+
+
+  // const size_t jsonSize = Helper::Measure_Json(data);
+  // char buffer[jsonSize];
+  // serializeJson(data, buffer, jsonSize);
+  // Serial.println(buffer);  
+}
+
+
 void setup(){  
+
+  eventGroup = xEventGroupCreate();
 
   // Create tasks for Wi-Fi and server
   xTaskCreate(sensorTask, "SensorTask", 1024 * 4, NULL, 3, &SensorTask_handle);  
