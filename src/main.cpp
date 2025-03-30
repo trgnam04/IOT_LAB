@@ -12,6 +12,7 @@
 #include <DHT.h>
 #include <DHT_U.h>
 
+#include <Shared_Attribute_Update.h>
 
 
 #define DEBUG 1
@@ -28,15 +29,26 @@ constexpr uint16_t THINGSBOARD_PORT = 1883U;
 constexpr uint16_t MAX_MESSAGE_SEND_SIZE = 512U;
 constexpr uint16_t MAX_MESSAGE_RECEIVE_SIZE = 256U;
 
+// and should be the same as the amount of variables in the passed array. If it is less not all variables will be requested or subscribed
+constexpr size_t MAX_ATTRIBUTES = 1U;
+
 WiFiClient espClient;
 Arduino_MQTT_Client mqttClient(espClient);
-ThingsBoard tb(mqttClient, MAX_MESSAGE_RECEIVE_SIZE, MAX_MESSAGE_SEND_SIZE, Default_Max_Stack_Size);
+// Initialize used apis
+Shared_Attribute_Update<1U, MAX_ATTRIBUTES> shared_update;
+const std::array<IAPI_Implementation*, 1U> apis = {
+    &shared_update
+};
+ThingsBoard tb(mqttClient, MAX_MESSAGE_RECEIVE_SIZE, MAX_MESSAGE_SEND_SIZE, Default_Max_Stack_Size, apis);
 
 // Set up the device properties on server
 constexpr char DEVICE_TOKEN[] = "Lab1_IOT";
 constexpr char TEMPERATURE_KEY[] = "temperature";
 constexpr char HUMIDITY_KEY[] = "humidity";
+constexpr char SHARED_ATTRIBUTE_KEY[] = "measurement_status";
 
+// Statuses for subscribing to shared attributes
+bool subscribed = false;
 
 /* Sensor object ---------------------------------------------*/
 #define DHTPIN 6
