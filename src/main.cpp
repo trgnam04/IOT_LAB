@@ -71,6 +71,36 @@ TaskHandle_t ServerTask_handle;
 /* Synchronous object ---------------------------------------------*/
 EventGroupHandle_t eventGroup;
 const int ABORT_MEASURE_BIT = (1 << 0);
+SemaphoreHandle_t mutex;
+
+
+/// @brief Update callback that will be called as soon as one of the provided shared attributes changes value,
+/// if none are provided we subscribe to any shared attribute change instead
+/// @param data Data containing the shared attributes that were changed and their current value
+void processSharedAttributeUpdate(const JsonObjectConst &data) {
+  Serial.println("Process Shared Attribute");
+  
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    if (strcmp(it->key().c_str(), "measurement_status") == 0) {  // So sánh chuỗi đúng cách
+      bool status = it->value().as<bool>();  // Đọc giá trị dưới dạng boolean
+      
+      if (status) {
+        Serial.println("Turn On");
+        xEventGroupSetBits(eventGroup, ABORT_MEASURE_BIT); 
+      } else {
+        Serial.println("Turn Off");
+        xEventGroupClearBits(eventGroup, ABORT_MEASURE_BIT); 
+      }      
+    }    
+  }
+
+  // In ra toàn bộ JSON để debug
+  const size_t jsonSize = Helper::Measure_Json(data);
+  char buffer[jsonSize];
+  serializeJson(data, buffer, jsonSize);
+  Serial.println(buffer);  
+}
+
 
 
 // Task to handle Wi-Fi connection
@@ -88,7 +118,7 @@ void wifiTask(void *pvParameters)
   // Print ESP32 Local IP Address
   Serial.println(WiFi.localIP());
   vTaskResume(ServerTask_handle);  
-  vTaskDelete(NULL);  // Delete the task when done
+  vTaskSuspend(NULL);  // Delete the task when done
 }
 
 // Task to read value from DHT20
@@ -98,20 +128,30 @@ void sensorTask(void* pvParameters)
   sensors_event_t event;
 
   while(1){
-    dht.temperature().getEvent(&event);
-    // get temperature value    
-    DHT20_Data.Temperature = event.temperature;
-    vTaskDelay(5);
-    dht.humidity().getEvent(&event);    
-    // get humidity value
-    DHT20_Data.Humidity = event.relative_humidity;
-#ifdef DEBUG
-    Serial.printf("Temperature: %.3f | Humidity: %.3f \n", DHT20_Data.Temperature, DHT20_Data.Humidity);
-#endif
+    xEventGroupWaitBits(eventGroup, ABORT_MEASURE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    for(;;){
+      if(xSemaphoreTake(mutex, portMAX_DELAY)){
+        dht.temperature().getEvent(&event);
+      // get temperature value    
+      DHT20_Data.Temperature = event.temperature;
+      vTaskDelay(5);
+      dht.humidity().getEvent(&event);    
+      // get humidity value
+      DHT20_Data.Humidity = event.relative_humidity;
+  #ifdef DEBUG
+      Serial.printf("Temperature: %.3f | Humidity: %.3f \n", DHT20_Data.Temperature, DHT20_Data.Humidity);
+  #endif
+        xSemaphoreGive(mutex);
+      }
+      if (!(xEventGroupGetBits(eventGroup) & ABORT_MEASURE_BIT)) {
+        break;  // Stop measuring
+      }
 
+      vTaskDelay(1000 / portTICK_PERIOD_MS);       
+    }
     
-    // get sensor data periodly
-    vTaskDelay(1000 / portTICK_PERIOD_MS); 
+      
+    // get sensor data periodly    
   }
 }
 
@@ -121,15 +161,22 @@ void publishdataTask(void* pvParameters)
 {
 
   while(1){
-   
-
-    tb.sendTelemetryData(TEMPERATURE_KEY, DHT20_Data.Temperature);
-    tb.sendTelemetryData(HUMIDITY_KEY, DHT20_Data.Humidity);
-
+    xEventGroupWaitBits(eventGroup, ABORT_MEASURE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    for(;;){
+      if(xSemaphoreTake(mutex, portMAX_DELAY)){
+        Serial.println("Sended Data");
+        tb.sendTelemetryData(TEMPERATURE_KEY, DHT20_Data.Temperature);
+        tb.sendTelemetryData(HUMIDITY_KEY, DHT20_Data.Humidity);
+        xSemaphoreGive(mutex);
+      }
+      
+      if (!(xEventGroupGetBits(eventGroup) & ABORT_MEASURE_BIT)) {
+        break;  // Stop measuring
+      }      
+      // publish data periodly      
+      vTaskDelay(5000 / portTICK_PERIOD_MS); 
+    }
     
-
-    // publish data periodly
-    vTaskDelay(5000 / portTICK_PERIOD_MS); 
   }
 
 }
@@ -149,13 +196,12 @@ void ServerTask(void* pvParameters){
 #endif          
         }
         else
-        {
-          vTaskResume(SensorTask_handle);
+        {        
+          vTaskResume(PublishData_handle);  
 #ifdef  DEBUG                  
           Serial.println("Connected");
 #endif          
-        }
-        vTaskResume(PublishData_handle);
+        }                
     }
 
     if (!subscribed) {
@@ -182,43 +228,24 @@ void ServerTask(void* pvParameters){
 
 }
 
-/// @brief Update callback that will be called as soon as one of the provided shared attributes changes value,
-/// if none are provided we subscribe to any shared attribute change instead
-/// @param data Data containing the shared attributes that were changed and their current value
-void processSharedAttributeUpdate(const JsonObjectConst &data) {
-  for (auto it = data.begin(); it != data.end(); ++it) {
-    if(it->key().c_str() == "measurement_status"){
-      if(it->value().as<boolean>()){
-        xEventGroupSetBits(eventGroup, ABORT_MEASURE_BIT); 
-      }
-      else{
-        xEventGroupClearBits(eventGroup, ABORT_MEASURE_BIT); 
-      }      
-    }    
-    // Shared attributes have to be parsed by their type.    
-  }
-
-
-
-  // const size_t jsonSize = Helper::Measure_Json(data);
-  // char buffer[jsonSize];
-  // serializeJson(data, buffer, jsonSize);
-  // Serial.println(buffer);  
-}
-
 
 void setup(){  
+  mutex = xSemaphoreCreateMutex();
+  if (mutex != NULL) {
+    xSemaphoreGive(mutex); 
+  }
 
   eventGroup = xEventGroupCreate();
 
   // Create tasks for Wi-Fi and server
   xTaskCreate(sensorTask, "SensorTask", 1024 * 4, NULL, 3, &SensorTask_handle);    
   xTaskCreate(publishdataTask, "PublishDataTask", 1024 * 4, NULL, 2, &PublishData_handle);
-  vTaskSuspend(PublishData_handle);
-
-  xTaskCreate(wifiTask, "WiFiTask", 1024 * 4, NULL, 1, &WifiTask_handle);    
-  xTaskCreate(ServerTask, "ServerTask", 1024 * 2, NULL, 1, &ServerTask_handle);    
+  vTaskSuspend(PublishData_handle);  
+  xTaskCreate(ServerTask, "ServerTask", 1024 * 4, NULL, 1, &ServerTask_handle);    
   vTaskSuspend(ServerTask_handle);
+
+  delay(1000);
+  xTaskCreate(wifiTask, "WiFiTask", 1024 * 4, NULL, 1, &WifiTask_handle);    
   
 }
  
