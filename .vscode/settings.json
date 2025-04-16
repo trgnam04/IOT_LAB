@@ -1,5 +1,6 @@
 {
     "files.associations": {
         "cmath": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/media/trgnam04/data1/WorkSpace/PERSONAL-SPACE/IOT_LAB/lib/ThingsBoard"
 }

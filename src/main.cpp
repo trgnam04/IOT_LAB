@@ -26,7 +26,7 @@ const char *password = "1234567890";
 // Firmware title and version used to compare with remote version, to check if an update is needed.
 // Title needs to be the same and version needs to be different --> downgrading is possible
 constexpr char CURRENT_FIRMWARE_TITLE[] = "Lab1_IOT";
-constexpr char CURRENT_FIRMWARE_VERSION[] = "1.0.0";
+constexpr char CURRENT_FIRMWARE_VERSION[] = "1.0.1";
 
 // Maximum amount of retries we attempt to download each firmware chunck over MQTT
 constexpr uint8_t FIRMWARE_FAILURE_RETRIES = 12U;
@@ -62,8 +62,8 @@ constexpr char TEMPERATURE_KEY[] = "temperature";
 constexpr char HUMIDITY_KEY[] = "humidity";
 
 /* Sensor object ---------------------------------------------*/
-#define DHTPIN 6
-#define DHTTYPE DHT11
+#define DHTPIN 13
+#define DHTTYPE DHT22
 DHT_Unified dht(DHTPIN, DHTTYPE);
 typedef struct
 {
@@ -106,6 +106,8 @@ void finished_callback(const bool &success)
     esp_restart();
     return;
   }
+  vTaskResume(SensorTask_handle);
+  vTaskResume(PublishData_handle);    
   Serial.println("Downloading firmware failed");
 }
 
@@ -116,7 +118,9 @@ void finished_callback(const bool &success)
 /// @param total Total amount of chunks we need to receive and process until the update has completed
 void progress_callback(const size_t &current, const size_t &total)
 {
-  Serial.printf("Progress %.2f%%\n", static_cast<float>(current * 100U) / total);
+  float ota_progress = static_cast<float>(current * 100U) / total;
+  Serial.printf("Progress %.2f%%\n", ota_progress);
+  tb.sendTelemetryData("ota_progress", ota_progress);
 }
 
 // Task to handle Wi-Fi connection
@@ -217,15 +221,7 @@ void ServerTask(void *pvParameters)
       // to understand how to create a new OTA pacakge and assign it to a device so it can download it.
       // Sending the request again after a successfull update will automatically send the UPDATED firmware state,
       // because the assigned firmware title and version on the cloud and the firmware version and title we booted into are the same.
-      updateRequestSent = ota.Subscribe_Firmware_Update(callback);
-      if (!updateRequestSent)
-      {
-        Serial.println("Firwmare Update Subscription Success");
-      }
-      else
-      {
-        Serial.println("Firwmare Update Subscription Fail");
-      }
+      updateRequestSent = ota.Subscribe_Firmware_Update(callback);      
     }
 
     tb.loop();
@@ -240,6 +236,7 @@ void setup()
   xTaskCreate(publishdataTask, "PublishDataTask", 1024 * 4, NULL, 2, &PublishData_handle);
   vTaskSuspend(PublishData_handle);
   xTaskCreate(ServerTask, "ServerTask", 1024 * 4, NULL, 1, &ServerTask_handle);
+  vTaskSuspend(ServerTask_handle);
   xTaskCreate(wifiTask, "WiFiTask", 1024 * 4, NULL, 1, &WifiTask_handle);
 }
 
